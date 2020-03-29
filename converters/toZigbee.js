@@ -1253,22 +1253,22 @@ const converters = {
                 meta.message.transition = meta.message.transition * 3.3;
             }
 
-            if (meta.mapped.model === 'GL-C-007' && utils.hasEndpoints(meta.device, [11, 13, 15])) {
-                // GL-C-007 RGBW
-                if (key === 'state' && value.toUpperCase() === 'OFF' && !meta.options.separate_control) {
-                    await converters.light_onoff_brightness.convertSet(meta.device.getEndpoint(15), key, value, meta);
-                }
-
-                entity = meta.state.white_value === -1 ? meta.device.getEndpoint(11) : meta.device.getEndpoint(15);
+            whiteEndpoint = meta.device.getEndpointByDeviceType('ZLLColorTemperatureLight');
+            if (whiteEndpoint === undefined){
+                whiteEndpoint = meta.device.getEndpointByDeviceType('ZLLDimmableLight');
             }
 
-            if (meta.mapped.model === 'GL-C-007/GL-C-008' && utils.hasEndpoints(meta.device, [10, 11, 13])) {
-                // GL-C-007/GL-C-008 RGBW
-                if (key === 'state' && value.toUpperCase() === 'OFF') {
-                    await converters.light_onoff_brightness.convertSet(meta.device.getEndpoint(13), key, value, meta);
+            rgbEndpoint = meta.device.getEndpointByDeviceType('ZLLExtendedColorLight');
+            if (rgbEndpoint === undefined){
+                rgbEndpoint = meta.device.getEndpointByDeviceType('ZLLColorLight');
+            }
+
+            if (rgbEndpoint !== undefined && whiteEndpoint !== undefined){
+                if (key === 'state' && value.toUpperCase() === 'OFF' && !meta.options.separate_control) {
+                    await converters.light_onoff_brightness.convertSet(whiteEndpoint, key, value, meta);
                 }
 
-                entity = meta.state.white_value === -1 ? meta.device.getEndpoint(11) : meta.device.getEndpoint(13);
+                entity = meta.state.white_value === -1 ? rgbEndpoint : whiteEndpoint;
             }
 
             if (meta.mapped.model === 'GL-S-007ZS') {
@@ -1302,69 +1302,66 @@ const converters = {
 
             const state = {};
 
-            if (meta.mapped.model === 'GL-C-007') {
-                // GL-C-007 RGBW
-                if (utils.hasEndpoints(meta.device, [11, 13, 15])) {
-                    if (key === 'white_value') {
+            whiteEndpoint = meta.device.getEndpointByDeviceType('ZLLColorTemperatureLight');
+            if (whiteEndpoint === undefined){
+                whiteEndpoint = meta.device.getEndpointByDeviceType('ZLLDimmableLight');
+            }
+
+            rgbEndpoint = meta.device.getEndpointByDeviceType('ZLLExtendedColorLight');
+            if (rgbEndpoint === undefined){
+                rgbEndpoint = meta.device.getEndpointByDeviceType('ZLLColorLight');
+            }
+
+            if (rgbEndpoint !== undefined && whiteEndpoint !== undefined){
+                switch (key) {
+                    case 'color':
+                        if (!meta.message.transition) {
+                            // Always provide a transition when setting color, otherwise CCT to RGB
+                            // doesn't work properly (CCT leds stay on).
+                            meta.message.transition = 0.4;
+                        }
+                        if (meta.state.white_value !== -1 && !meta.options.separate_control) {
+                            // Switch from white to RGB
+                            await rgbEndpoint.command('genOnOff', 'on', {});
+                            await whiteEndpoint.command('genOnOff', 'off', {});
+                            state.white_value = -1;
+                        }
+                        const result = await converters.light_color.convertSet(rgbEndpoint, key, value, meta);
+                        return {
+                            state: {color: value, ...result.state, ...state},
+                            readAfterWriteTime: 0,
+                        };
+                        break;
+                    case 'color_temp', 'color_temp_percent':
                         // Switch from RGB to white
                         if (!meta.options.separate_control) {
-                            await meta.device.getEndpoint(15).command('genOnOff', 'on', {});
-                            await meta.device.getEndpoint(11).command('genOnOff', 'off', {});
+                            await whiteEndpoint.command('genOnOff', 'on', {});
+                            await rgbEndpoint.command('genOnOff', 'off', {});
+                            state.color = xyWhite; //TODO find out what is this?
+                        }
+                        const result = await converters.light_colortemp.convertSet(
+                            whiteEndpoint, key, value, meta,
+                        );
+                        return {
+                            state: {color_temp: value, ...result.state, ...state},
+                            readAfterWriteTime: 0,
+                        };
+                        break;
+                    case 'white_value':
+                        // Switch from RGB to white
+                        if (!meta.options.separate_control) {
+                            await whiteEndpoint.command('genOnOff', 'on', {});
+                            await rgbEndpoint.command('genOnOff', 'off', {});
                             state.color = xyWhite;
                         }
-
                         const result = await converters.light_brightness.convertSet(
-                            meta.device.getEndpoint(15), key, value, meta,
+                            whiteEndpoint, key, value, meta,
                         );
                         return {
                             state: {white_value: value, ...result.state, ...state},
                             readAfterWriteTime: 0,
                         };
-                    } else {
-                        if (meta.state.white_value !== -1 && !meta.options.separate_control) {
-                            // Switch from white to RGB
-                            await meta.device.getEndpoint(11).command('genOnOff', 'on', {});
-                            await meta.device.getEndpoint(15).command('genOnOff', 'off', {});
-                            state.white_value = -1;
-                        }
-                    }
-                } else if (utils.hasEndpoints(meta.device, [11, 13])) {
-                    if (key === 'white_value') {
-                        // Switch to white channel
-                        const payload = {colortemp: 500, transtime: getTransition(entity, key, meta).time};
-                        await entity.command('lightingColorCtrl', 'moveToColorTemp', payload, getOptions(meta.mapped));
-
-                        const result = await converters.light_brightness.convertSet(entity, key, value, meta);
-                        return {
-                            state: {white_value: value, ...result.state, color: xyWhite},
-                            readAfterWriteTime: 0,
-                        };
-                    }
-                }
-            }
-
-            // GL-C-007/GL-C-008 RGBW
-            if (meta.mapped.model === 'GL-C-007/GL-C-008' && utils.hasEndpoints(meta.device, [10, 11, 13])) {
-                if (key === 'white_value') {
-                    // Switch from RGB to white
-                    await meta.device.getEndpoint(13).command('genOnOff', 'on', {});
-                    await meta.device.getEndpoint(11).command('genOnOff', 'off', {});
-
-                    const result = await converters.light_brightness.convertSet(
-                        meta.device.getEndpoint(13), key, value, meta,
-                    );
-                    return {
-                        state: {white_value: value, ...result.state, color: xyWhite},
-                        readAfterWriteTime: 0,
-                    };
-                } else {
-                    if (meta.state.white_value !== -1) {
-                        // Switch from white to RGB
-                        await meta.device.getEndpoint(11).command('genOnOff', 'on', {});
-                        await meta.device.getEndpoint(13).command('genOnOff', 'off', {});
-                        state.white_value = -1;
-                    }
-                    entity = meta.device.getEndpoint(11);
+                        break;
                 }
             }
 
